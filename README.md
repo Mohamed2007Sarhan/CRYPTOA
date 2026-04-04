@@ -340,7 +340,7 @@ Test all 25+ strategies against **up to 365 days** of historical data:
 ### 1. Clone & Install
 
 ```bash
-git clone [https://github.com/Mohamed2007Sarhan/CRYPTOA](https://github.com/Mohamed2007Sarhan/CRYPTOA)
+git clone https://github.com/Mohamed2007Sarhan/CRYPTOA
 cd trade
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
