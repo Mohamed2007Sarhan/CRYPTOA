@@ -81,10 +81,30 @@ class AutoTradeScreen(QWidget):
 
         cl.addWidget(self._sep())
         cl.addWidget(self._section_title("🔄 Sessions"))
+        # Interval selector
+        from PyQt6.QtWidgets import QComboBox
+        self.interval_combo = QComboBox()
+        self.interval_combo.addItems(["1m","5m","15m","30m","1h","2h","4h","6h","12h","1d"])
+        self.interval_combo.setCurrentText("1h")
+        self.interval_combo.setStyleSheet("""
+            QComboBox{background:#21262D;color:#F0F6FC;border:1px solid #30363D;
+                      border-radius:8px;padding:6px;font-size:12px;}
+            QComboBox::drop-down{border:none;}
+            QComboBox QAbstractItemView{background:#21262D;color:#F0F6FC;border:1px solid #30363D;}
+        """)
+        self.interval_combo.currentTextChanged.connect(self._update_timing_label)
         self.max_trades_spin = self._spin(1, 100, 10, "max trades")
         fl = QFormLayout()
+        fl.addRow("Interval:",   self.interval_combo)
         fl.addRow("Max trades:", self.max_trades_spin)
         cl.addLayout(fl)
+
+        # عرض توقيت الفحص
+        self._timing_label = QLabel()
+        self._timing_label.setStyleSheet("color:#8B949E;font-size:11px;padding:4px 0;")
+        self._timing_label.setWordWrap(True)
+        cl.addWidget(self._timing_label)
+        self._update_timing_label("1h")
         cl.addStretch()
 
         # Buttons
@@ -120,11 +140,11 @@ class AutoTradeScreen(QWidget):
 
         # Stats row
         stats = QHBoxLayout()
-        self._total_card  = self._stat_card("Total Trades", "0")
+        self._total_card  = self._stat_card("Trades",   "0")
         self._win_card    = self._stat_card("Win Rate", "—")
-        self._pnl_card    = self._stat_card("P&L", "—", "#22C55E")
-        self._status_card = self._stat_card("Status", "Idle", "#8B949E")
-        for c in [self._total_card, self._win_card, self._pnl_card, self._status_card]:
+        self._pnl_card    = self._stat_card("Total P&L", "—",    "#22C55E")
+        self._state_card  = self._stat_card("Mode",     "Idle",  "#8B949E")
+        for c in [self._total_card, self._win_card, self._pnl_card, self._state_card]:
             stats.addWidget(c)
         rl.addLayout(stats)
 
@@ -215,18 +235,37 @@ class AutoTradeScreen(QWidget):
         self._log(f"   Mode: {'Testnet' if self.testnet_cb.isChecked() else '⚠️ LIVE'}", "#F59E0B")
 
         from core.trading_engine import AutoTrader
+        from core.strategy_manager import BUILTIN_STRATEGIES
+
+        interval = self.interval_combo.currentText()
+        # استخدام كل الاستراتيجيات المدمجة
+        all_strategies = list(BUILTIN_STRATEGIES.keys())
+
         self._trader = AutoTrader(
-            symbol=self.symbol,
-            api_key=api_key,
-            api_secret=api_secret,
-            testnet=self.testnet_cb.isChecked(),
-            risk_pct=self.risk_spin.value(),
-            stop_loss_pct=self.sl_spin.value(),
-            take_profit_pct=self.tp_spin.value(),
+            symbol           = self.symbol,
+            api_key          = api_key,
+            api_secret       = api_secret,
+            testnet          = self.testnet_cb.isChecked(),
+            risk_pct         = self.risk_spin.value(),
+            stop_loss_pct    = self.sl_spin.value(),
+            take_profit_pct  = self.tp_spin.value(),
+            interval         = interval,
+            strategy_names   = all_strategies,
+            use_ai           = True,
+            min_confidence   = 65,
         )
         self._trader.on_log    = lambda m: self._log(m)
         self._trader.on_trade  = self._on_trade
+        self._trader.on_status = self._on_status
         self._trader.start()
+
+        # تحديث عرض التوقيت
+        from core.pre_candle_predictor import TIMEFRAME_SECONDS, PRE_CLOSE_WINDOW
+        candle_sec  = TIMEFRAME_SECONDS.get(interval, 3600)
+        check_every = max(candle_sec - PRE_CLOSE_WINDOW, 60)
+        m, s = divmod(check_every, 60)
+        h, m = divmod(m, 60)
+        self._log(f"   ⏰ سيفحص كل {h}s {m:02d}m (5m قبل كل شمعة)", "#8B949E")
 
     def _stop(self):
         if self._trader:
@@ -238,13 +277,71 @@ class AutoTradeScreen(QWidget):
         self._status_card._vl.setStyleSheet("color:#EF4444;font-size:18px;font-weight:bold;")
         self._log("⏹  AutoTrader stopped", "#EF4444")
 
+    def _update_timing_label(self, interval: str):
+        """يعرض معلومة متى سيتم المسح القادم."""
+        try:
+            from core.trading_engine import _get_scan_interval, PRE_CLOSE_WINDOW_SEC
+            from core.pre_candle_predictor import TIMEFRAME_SECONDS
+            candle_sec  = TIMEFRAME_SECONDS.get(interval, 3600)
+            scan_sec    = _get_scan_interval(interval)
+            guard_sec   = max(0, candle_sec - PRE_CLOSE_WINDOW_SEC)
+            sm, ss      = divmod(scan_sec, 60)
+            gm, gs      = divmod(guard_sec, 60)
+            gh, gm      = divmod(gm, 60)
+            self._timing_label.setText(
+                f"🔍 HUNT: كل {sm}د {ss}ث  |  ⚔️ GUARD: ينام {gh}س{gm:02d}د → يفحص 5m قبل {interval}"
+            )
+        except Exception:
+            pass
+
     def _on_trade(self, trade: dict):
-        side  = trade.get("side", "")
-        price = trade.get("price", 0)
-        qty   = trade.get("qty", 0)
-        pnl   = trade.get("pnl", 0)
-        color = "#22C55E" if side == "BUY" else "#EF4444"
-        self._log(
-            f"{'🟢' if side=='BUY' else '🔴'} {side} {qty} {self.symbol} @ ${price:.4f}  |  P&L: {pnl:+.2f} USDT",
-            color
-        )
+        t_type     = trade.get("type", "")
+        price      = trade.get("price", 0)
+        qty        = trade.get("quantity", 0)
+        pnl        = trade.get("pnl_pct", 0)
+        total_pnl  = trade.get("total_pnl", 0)
+        trades_n   = trade.get("trades", 0)
+        win_rate   = trade.get("win_rate", 0)
+        reason     = trade.get("reason", "")
+
+        if t_type == "OPEN":
+            self._log(f"🟢 BUY {qty:.6f} {self.symbol} @ {price:.4f}", "#22C55E")
+            self._state_card._vl.setText("⚔️ GUARD")
+            self._state_card._vl.setStyleSheet("color:#F59E0B;font-size:16px;font-weight:bold;")
+
+        elif t_type == "CLOSE":
+            color = "#22C55E" if pnl >= 0 else "#EF4444"
+            self._log(
+                f"{'🟢' if pnl >= 0 else '🔴'} CLOSE @ {price:.4f} "
+                f"| PnL: {pnl:+.2f}% | {reason}",
+                color,
+            )
+            self._state_card._vl.setText("🔍 HUNT")
+            self._state_card._vl.setStyleSheet("color:#00FFB2;font-size:16px;font-weight:bold;")
+
+        elif t_type == "EMERGENCY_CLOSE":
+            self._log(
+                f"🆘 EMERGENCY @ {price:.4f} | PnL: {pnl:+.2f}% | {reason}",
+                "#F59E0B",
+            )
+            self._state_card._vl.setText("🔍 HUNT")
+            self._state_card._vl.setStyleSheet("color:#00FFB2;font-size:16px;font-weight:bold;")
+
+        # تحديث بطاقات الإحصاء
+        self._total_card._vl.setText(str(trades_n))
+        pnl_color = "#22C55E" if total_pnl >= 0 else "#EF4444"
+        self._pnl_card._vl.setText(f"{total_pnl:+.2f}%")
+        self._pnl_card._vl.setStyleSheet(f"color:{pnl_color};font-size:18px;font-weight:bold;")
+        self._win_card._vl.setText(f"{win_rate}%")
+
+    def _on_status(self, status: dict):
+        """تحديث الحالة من trading_engine."""
+        state_name = status.get("state", "")
+        if not self._trader:
+            return
+        if state_name == "HUNTING" and not status.get("in_trade"):
+            self._state_card._vl.setText("🔍 HUNT")
+            self._state_card._vl.setStyleSheet("color:#00FFB2;font-size:16px;font-weight:bold;")
+        elif state_name == "GUARDING":
+            self._state_card._vl.setText("⚔️ GUARD")
+            self._state_card._vl.setStyleSheet("color:#F59E0B;font-size:16px;font-weight:bold;")
