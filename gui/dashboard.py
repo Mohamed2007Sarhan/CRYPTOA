@@ -3,14 +3,15 @@ Dashboard — Main analysis screen with 6-stage AI verification
 Fully in English.
 """
 import threading
+import pyqtgraph as pg
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTextEdit, QProgressBar, QTabWidget,
     QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
     QComboBox
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
-from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot, QRectF, QPointF
+from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor, QPicture, QPainter
 
 from core.market_data import MarketData
 from core.indicators import compute_all_indicators
@@ -18,6 +19,75 @@ from core.news_fetcher import NewsFetcher
 from core.strategy_manager import StrategyManager, BUILTIN_STRATEGIES
 from core.ai_engine import MultiStageAnalyzer
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Candlestick Graph Item
+# ══════════════════════════════════════════════════════════════════════════════
+class CandlestickItem(pg.GraphicsObject):
+    def __init__(self, data):
+        pg.GraphicsObject.__init__(self)
+        self.set_data(data)
+        
+    def set_data(self, data):
+        self.data = data
+        self.generatePicture()
+        self.update()
+
+    def generatePicture(self):
+        self.picture = QPicture()
+        p = QPainter(self.picture)
+        p.setPen(pg.mkPen('w'))
+        w = (self.data[1][0] - self.data[0][0]) / 3. if len(self.data) > 1 else 0.3
+        for t, op, cl, min_p, max_p in self.data:
+            p.drawLine(QPointF(t, min_p), QPointF(t, max_p))
+            if op > cl:
+                p.setBrush(pg.mkBrush('#EF4444'))
+                p.setPen(pg.mkPen('#EF4444'))
+            elif op < cl:
+                p.setBrush(pg.mkBrush('#22C55E'))
+                p.setPen(pg.mkPen('#22C55E'))
+            else:
+                p.setBrush(pg.mkBrush('w'))
+                p.setPen(pg.mkPen('w'))
+            p.drawRect(QRectF(t-w, op, w*2, cl-op))
+        p.end()
+        
+    def paint(self, p, *args):
+        p.drawPicture(0, 0, self.picture)
+        
+    def boundingRect(self):
+        return QRectF(self.picture.boundingRect())
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Live Chart Polling Thread
+# ══════════════════════════════════════════════════════════════════════════════
+class ChartLiveThread(QThread):
+    chart_data_updated = pyqtSignal(object)
+    
+    def __init__(self, symbol: str, tf_combo):
+        super().__init__()
+        self.symbol = symbol
+        self.tf_combo = tf_combo
+        self._stop_flag = False
+        
+    def stop(self):
+        self._stop_flag = True
+        
+    def run(self):
+        from core.market_data import MarketData
+        import time
+        m = MarketData()
+        while not self._stop_flag:
+            try:
+                tf = self.tf_combo.currentText()
+                df = m.get_klines(self.symbol, interval=tf, limit=1000)
+                self.chart_data_updated.emit(df)
+            except Exception:
+                pass
+            
+            for _ in range(30):
+                if self._stop_flag: break
+                time.sleep(0.1)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Background Worker Thread
@@ -30,6 +100,7 @@ class SignalUpdater(QThread):
     strategy_discovered = pyqtSignal(str)
     ai_progressed    = pyqtSignal(str, str)
     ai_completed     = pyqtSignal(dict)
+    chart_data_updated = pyqtSignal(object)
 
     def __init__(self, symbol: str, primary_tf: str = "1h"):
         super().__init__()
@@ -64,8 +135,10 @@ class SignalUpdater(QThread):
                 ind["high_24h"]   = float(ticker.get("highPrice", 0))
                 ind["low_24h"]    = float(ticker.get("lowPrice", 0))
                 self._full_data[f"indicators_{tf}"] = ind
+                self._full_data[f"df_{tf}"] = df
             self._full_data["ticker"] = ticker
             self.market_updated.emit(self._full_data.get(f"indicators_{self.primary_tf}", {}))
+            self.chart_data_updated.emit(self._full_data.get(f"df_{self.primary_tf}"))
         except Exception as e:
             self.market_updated.emit({"error": str(e)})
 
@@ -193,6 +266,10 @@ class Dashboard(QWidget):
         self.symbol   = symbol
         self._updater = None
         self._setup_ui()
+        
+        self.live_thread = ChartLiveThread(self.symbol, self.tf_combo)
+        self.live_thread.chart_data_updated.connect(self._on_chart_data)
+        self.live_thread.start()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -234,6 +311,7 @@ class Dashboard(QWidget):
             QComboBox { background:#21262D; color:#8B949E; border:1px solid #30363D; border-radius:6px; }
             QComboBox::drop-down { border:none; }
         """)
+        self.tf_combo.currentIndexChanged.connect(self._on_tf_changed)
 
         tf_lbl = QLabel("Timeframe (Candle):")
         tf_lbl.setStyleSheet("color:#8B949E; font-size:12px; font-weight:bold;")
@@ -277,6 +355,7 @@ class Dashboard(QWidget):
             QTabBar::tab:hover:!selected { background:#30363D; color:#F0F6FC; }
         """)
         tabs.addTab(self._build_ai_tab(),       "🤖 AI Analysis")
+        tabs.addTab(self._build_chart_tab(),    "📉 Live Chart")
         tabs.addTab(self._build_strategy_tab(), "📈 Strategies")
         tabs.addTab(self._build_news_tab(),     "📰 News")
         tabs.addTab(self._build_indicators_tab(),"📊 Indicators")
@@ -405,6 +484,17 @@ class Dashboard(QWidget):
         f._vl = vl
         return f
 
+    # ── Chart Tab ─────────────────────────────────────────────────────────────
+    def _build_chart_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground('#0D1117')
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        lay.addWidget(self.plot_widget)
+        return w
+
     # ── Strategy Tab ──────────────────────────────────────────────────────────
     def _build_strategy_tab(self) -> QWidget:
         w = QWidget()
@@ -530,6 +620,7 @@ class Dashboard(QWidget):
         self._updater.strategy_discovered.connect(self._on_discovery)
         self._updater.ai_progressed.connect(self._on_ai_progress)
         self._updater.ai_completed.connect(self._on_ai_complete)
+        self._updater.chart_data_updated.connect(self._on_chart_data)
         self._updater.finished.connect(self._on_done)
         self._updater.start()
 
@@ -546,6 +637,10 @@ class Dashboard(QWidget):
             dot.setStyleSheet("color:#30363D; font-size:11px;")
         self.strategy_table.setRowCount(0)
         self.discovery_log.clear()
+
+    def _on_tf_changed(self):
+        if hasattr(self, '_chart_items_created'):
+            self._chart_items_created = False
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -764,8 +859,82 @@ class Dashboard(QWidget):
         if warning:
             self._log(f"\n⚠️  WARNING: {warning}", "#EF4444")
 
+
         for dot in self._stages.values():
             dot.setStyleSheet("color:#22C55E; font-size:11px;")
+
+    @pyqtSlot(object)
+    def _on_chart_data(self, df):
+        if df is None or len(df) == 0:
+            return
+            
+        from core.indicators import compute_range_filter
+        
+        df_rf = compute_range_filter(df, src_col='close')
+        
+        time_vals = list(range(len(df_rf)))
+        candles = []
+        for i, (idx, row) in enumerate(df_rf.iterrows()):
+            candles.append((i, row['open'], row['close'], row['low'], row['high']))
+            
+        if not hasattr(self, '_chart_items_created') or not self._chart_items_created:
+            self.plot_widget.clear()
+            self._candle_item = CandlestickItem(candles)
+            self.plot_widget.addItem(self._candle_item)
+            
+            filt_pen = pg.mkPen('#8B949E', width=2)
+            h_pen = pg.mkPen(color=(34, 197, 94, 150), width=1)
+            l_pen = pg.mkPen(color=(239, 68, 68, 150), width=1)
+            
+            self._filt_line = self.plot_widget.plot(time_vals, df_rf['filt'].values, pen=filt_pen, name="Filter")
+            self._h_line = self.plot_widget.plot(time_vals, df_rf['h_band'].values, pen=h_pen, name="Upper Band")
+            self._l_line = self.plot_widget.plot(time_vals, df_rf['l_band'].values, pen=l_pen, name="Lower Band")
+            
+            self._scatter_buy = pg.ScatterPlotItem(symbol='t1', brush='#22C55E', pen='w', size=14)
+            self._scatter_sell = pg.ScatterPlotItem(symbol='t', brush='#EF4444', pen='w', size=14)
+            self.plot_widget.addItem(self._scatter_buy)
+            self.plot_widget.addItem(self._scatter_sell)
+            
+            self._buy_texts = []
+            self._sell_texts = []
+            self._chart_items_created = True
+        else:
+            self._candle_item.set_data(candles)
+            self._filt_line.setData(time_vals, df_rf['filt'].values)
+            self._h_line.setData(time_vals, df_rf['h_band'].values)
+            self._l_line.setData(time_vals, df_rf['l_band'].values)
+            for t in self._buy_texts + self._sell_texts:
+                self.plot_widget.removeItem(t)
+            self._buy_texts.clear()
+            self._sell_texts.clear()
+
+        # Update Signals and text
+        buy_mask = df_rf['buy_signal'].values
+        buy_x = [i for i, v in enumerate(buy_mask) if v]
+        buy_y = df_rf['low'].values[buy_mask] * 0.998
+        self._scatter_buy.setData(x=buy_x, y=buy_y)
+        for bx, by in zip(buy_x, buy_y):
+            ti = pg.TextItem("BUY", color='#22C55E', anchor=(0.5, 0))
+            ti.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+            ti.setPos(bx, by * 0.999)
+            self.plot_widget.addItem(ti)
+            self._buy_texts.append(ti)
+            
+        sell_mask = df_rf['sell_signal'].values
+        sell_x = [i for i, v in enumerate(sell_mask) if v]
+        sell_y = df_rf['high'].values[sell_mask] * 1.002
+        self._scatter_sell.setData(x=sell_x, y=sell_y)
+        for sx, sy in zip(sell_x, sell_y):
+            ti = pg.TextItem("SELL", color='#EF4444', anchor=(0.5, 1))
+            ti.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+            ti.setPos(sx, sy * 1.001)
+            self.plot_widget.addItem(ti)
+            self._sell_texts.append(ti)
+            
+        # Axis ticks
+        ticks = [(i, str(df_rf.index[i].strftime('%m-%d %H:%M'))) for i in range(0, len(time_vals), max(1, len(time_vals)//5))]
+        ax = self.plot_widget.getAxis('bottom')
+        ax.setTicks([ticks])
 
     def _on_done(self):
         self.progress.setVisible(False)

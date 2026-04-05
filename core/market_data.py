@@ -60,11 +60,11 @@ class MarketData:
     def get_multi_timeframe(self, symbol: str) -> Dict[str, pd.DataFrame]:
         """جلب البيانات على أطر زمنية متعددة لتشمل الأساسي والمتقدم"""
         frames = {}
-        for interval, limit in [("15m", 250), ("1h", 200), ("4h", 150), ("1d", 100)]:
+        for interval in ["15m", "1h", "4h", "1d"]:
             try:
-                frames[interval] = self.get_klines(symbol, interval, limit=limit)
+                frames[interval] = self.get_klines(symbol, interval, limit=1000)
             except Exception as e:
-                print(f"⚠️ فشل تحميل {interval}: {e}")
+                print(f"⚠️ Failed to load {interval}: {e}")
         return frames
 
     def get_order_book(self, symbol: str, limit: int = 20) -> dict:
@@ -140,22 +140,22 @@ class MarketData:
                 prev_val = int(prev.get("value", 50))
                 classification = current.get("value_classification", "Neutral")
                 arabic_map = {
-                    "Extreme Fear":  "خوف شديد 😱",
-                    "Fear":          "خوف 😨",
-                    "Neutral":       "محايد ⚖️",
-                    "Greed":         "طمع 😏",
-                    "Extreme Greed": "طمع شديد 🤑",
+                    "Extreme Fear":  "Extreme Fear 😱",
+                    "Fear":          "Fear 😨",
+                    "Neutral":       "Neutral ⚖️",
+                    "Greed":         "Greed 😏",
+                    "Extreme Greed": "Extreme Greed 🤑",
                 }
                 return {
                     "value":          val,
                     "prev_value":     prev_val,
                     "classification": arabic_map.get(classification, classification),
-                    "trend":          "ارتفاع" if val > prev_val else ("انخفاض" if val < prev_val else "ثبات"),
+                    "trend":          "Rising" if val > prev_val else ("Falling" if val < prev_val else "Flat"),
                     "signal":         "BUY" if val < 25 else ("SELL" if val > 75 else "HOLD"),
                 }
         except Exception as e:
-            print(f"⚠️ Fear & Greed خطأ: {e}")
-        return {"value": 50, "classification": "محايد ⚖️", "signal": "HOLD", "prev_value": 50, "trend": "ثبات"}
+            print(f"⚠️ Fear & Greed error: {e}")
+        return {"value": 50, "classification": "Neutral ⚖️", "signal": "HOLD", "prev_value": 50, "trend": "Flat"}
 
     # ── CoinGecko Data ─────────────────────────────────────────────────────────
 
@@ -195,7 +195,7 @@ class MarketData:
                     "description":     d.get("description", {}).get("en", "")[:500],
                 }
         except Exception as e:
-            print(f"⚠️ CoinGecko خطأ: {e}")
+            print(f"⚠️ CoinGecko error: {e}")
         return {}
 
     def get_global_market(self) -> dict:
@@ -213,7 +213,7 @@ class MarketData:
                     "active_cryptos":      d.get("active_cryptocurrencies", 0),
                 }
         except Exception as e:
-            print(f"⚠️ Global market خطأ: {e}")
+            print(f"⚠️ Global market error: {e}")
         return {}
 
     # ── Binance Account (needs keys) ──────────────────────────────────────────

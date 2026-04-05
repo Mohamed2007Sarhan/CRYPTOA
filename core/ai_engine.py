@@ -515,12 +515,12 @@ Respond with STRICT JSON only (no text outside JSON). The JSON must exactly matc
                     if dec in ["BUY", "SELL"]:
                         sl = final_json.get("stop_loss")
                         if sl in [None, 0, 0.0, "0", "N/A"]:
-                            if on_chunk: on_chunk("\n⚠️ الشبكة أرجعت أصفار في أمر التداول. محاولة إجبارية لإصلاح الأرقام...\n")
+                            if on_chunk: on_chunk("\n⚠️ Network returned zeros in trade order. Forcing attempt to fix numbers...\n")
                             time.sleep(2)
                             continue
                     break
             
-            if on_chunk: on_chunk("\n⚠️ اتصال معلق أو رد غير مكتمل. جاري المحاولة بشكل لا نهائي...\n")
+            if on_chunk: on_chunk("\n⚠️ Connection hung or incomplete reply. Retrying infinitely...\n")
             time.sleep(3)
 
         dec = final_json["decision"]
@@ -616,11 +616,11 @@ Respond with STRICT JSON only (no text outside JSON). The JSON must exactly matc
                         if dec in ["BUY", "SELL"]:
                             sl = s3.get("stop_loss")
                             if sl in [None, 0, 0.0, "0", "N/A"]:
-                                on_progress("stage3_stream", "\n⚠️ Stage 3 أرجع أصفار بالخطأ. إعادة المحاولة...\n")
+                                on_progress("stage3_stream", "\n⚠️ Stage 3 returned zeros by mistake. Retrying...\n")
                                 time.sleep(2)
                                 continue
                         break
-                on_progress("stage3_stream", "\n⚠️ خطأ شبكة Stage 3. إعادة المحاولة لا نهائياً...\n")
+                on_progress("stage3_stream", "\n⚠️ Stage 3 network error. Retrying infinitely...\n")
                 time.sleep(3)
                 
             self.results["stage3"] = s3
@@ -637,7 +637,7 @@ Respond with STRICT JSON only (no text outside JSON). The JSON must exactly matc
                     s4 = _parse_json(llama_raw)
                     if s4 and "decision" in s4:
                         break
-                on_progress("stage4_stream", "\n⚠️ خطأ شبكة Stage 4. إعادة المحاولة لا نهائياً...\n")
+                on_progress("stage4_stream", "\n⚠️ Stage 4 network error. Retrying infinitely...\n")
                 time.sleep(3)
                 
             self.results["stage4"] = s4

@@ -1,5 +1,5 @@
 """
-Backtester — وضع الاختبار: يخمن ويتحقق من دقة التخمين
+Backtester — Test Mode: Estimates and verifies accuracy
 """
 import pandas as pd
 import numpy as np
@@ -53,8 +53,8 @@ class Backtester:
             lookback: int = 50,
             ) -> BacktestResult:
         """
-        يشغل الـ Backtest على البيانات التاريخية.
-        يأخذ نافذة متحركة من البيانات ويطبق الاستراتيجية.
+        Runs Backtest on historical data.
+        Takes a sliding window of data and applies the strategy.
         """
         result = BacktestResult()
         capital = initial_capital
@@ -89,7 +89,7 @@ class Backtester:
                                 if trade_side == "BUY"
                                 else entry_price * (1 - take_profit_pct / 100))
             else:
-                # فحص وقف الخسارة وهدف الربح
+                # Check Stop Loss and Take Profit
                 hit_sl = (next_price <= sl_price if trade_side == "BUY"
                           else next_price >= sl_price)
                 hit_tp = (next_price >= tp_price if trade_side == "BUY"
@@ -121,7 +121,7 @@ class Backtester:
                     drawdown = (peak_capital - capital) / peak_capital * 100
                     result.max_drawdown = max(result.max_drawdown, drawdown)
 
-        # إحصائيات النهائية
+        # Final Statistics
         result.total_trades = len(result.trades)
         if result.total_trades > 0:
             wins  = [t for t in result.trades if t["outcome"] == "WIN"]
@@ -146,7 +146,7 @@ class Backtester:
 
     def run_all_strategies(self, df: pd.DataFrame,
                            **kwargs) -> Dict[str, BacktestResult]:
-        """يختبر جميع الاستراتيجيات"""
+        """Tests all strategies"""
         results = {}
         for name in self.strategy_mgr.list_strategies():
             results[name] = self.run(df, name, **kwargs)
@@ -155,8 +155,8 @@ class Backtester:
     def ai_prediction_test(self, df: pd.DataFrame,
                             ai_predictions: List[dict]) -> dict:
         """
-        يتحقق من دقة تنبؤات الذكاء الاصطناعي على البيانات الفعلية.
-        كل prediction: {index, decision, confidence}
+        Verifies AI prediction accuracy on actual data.
+        Every prediction: {index, decision, confidence}
         """
         correct = 0
         wrong   = 0

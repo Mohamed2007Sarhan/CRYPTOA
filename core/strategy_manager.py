@@ -351,6 +351,17 @@ BUILTIN_STRATEGIES: Dict[str, dict] = {
                      "rsi": {"gte": 45}, "macd_bearish": True},
         },
     },
+    
+    # ─── Custom External ──────────────────────────────────────────────────────
+    "Range_Filter": {
+        "name": "Range Filter (B&S Signals)",
+        "description": "DonovanWall's Range Filter strategy",
+        "category": "Trend",
+        "weight": 2.5,
+        "win_rate": 78,
+        "rules": {"buy":  {"rf_buy": True},
+                  "sell": {"rf_sell": True}},
+    },
 }
 
 

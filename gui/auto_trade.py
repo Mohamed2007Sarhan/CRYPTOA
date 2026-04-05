@@ -265,7 +265,7 @@ class AutoTradeScreen(QWidget):
         check_every = max(candle_sec - PRE_CLOSE_WINDOW, 60)
         m, s = divmod(check_every, 60)
         h, m = divmod(m, 60)
-        self._log(f"   ⏰ سيفحص كل {h}s {m:02d}m (5m قبل كل شمعة)", "#8B949E")
+        self._log(f"   ⏰ Scans every {h}h {m:02d}m (5m before each candle)", "#8B949E")
 
     def _stop(self):
         if self._trader:
@@ -289,7 +289,7 @@ class AutoTradeScreen(QWidget):
             gm, gs      = divmod(guard_sec, 60)
             gh, gm      = divmod(gm, 60)
             self._timing_label.setText(
-                f"🔍 HUNT: كل {sm}د {ss}ث  |  ⚔️ GUARD: ينام {gh}س{gm:02d}د → يفحص 5m قبل {interval}"
+                f"🔍 HUNT: Every {sm}m {ss}s  |  ⚔️ GUARD: Sleeps {gh}h {gm:02d}m → Scans 5m before {interval}"
             )
         except Exception:
             pass
