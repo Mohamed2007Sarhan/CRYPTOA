@@ -316,7 +316,7 @@ class AutoTrader:
             self._log(
                 f"⚔️ [GUARDING] In trade @ {self._entry_price:.4f} | "
                 f"Current PnL: {pnl_now:+.2f}% | "
-                f"Next check in {sleep_m}m {sleep_s}s (5m before close)"
+                f"Next check in {sleep_m}m {sleep_s}s ({PRE_CLOSE_WINDOW_SEC//60}m before close)"
             )
             ok = _interruptible_sleep(sleep_sec, lambda: self._running)
             if not ok:
@@ -376,9 +376,13 @@ class AutoTrader:
             sell_reason = f"📉 SELL consensus ({consensus['confidence']}%) + no bullish prediction"
 
         if sell_reason:
-            self._close_trade("SELL", current_price, sell_reason)
-            self._state = TraderState.HUNTING
-            self._log("🔍 Switched to HUNTING — looking for next buy opportunity...")
+            if self.use_ai:
+                self._log("🤖 Sending standard exit signals to Ultimate Blender for verification...")
+                self._analyze_with_ai_then_sell_or_hold(indicators, current_price, sell_reason)
+            else:
+                self._close_trade("SELL", current_price, sell_reason)
+                self._state = TraderState.HUNTING
+                self._log("🔍 Switched to HUNTING — looking for next buy opportunity...")
         else:
             pnl_now = (current_price - self._entry_price) / self._entry_price * 100
             self._log(
@@ -391,14 +395,36 @@ class AutoTrader:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _analyze_with_ai_then_buy(self, df, indicators, current_price: float):
-        """Runs full 6-stage AI analysis in a background thread."""
-        news     = self.news_fetcher.get_news_for_symbol(self.symbol)
-        analyzer = MultiStageAnalyzer(self.symbol, indicators, news["text"])
+        """Runs full 6-stage AI analysis by preparing full_data payload."""
+        self._log("⏳ Collecting full market context for Ultimate Blender...")
+        full_data = {}
+        
+        # 1. Market Data
+        frames = self.market.get_multi_timeframe(self.symbol)
+        for tf, d in frames.items():
+            full_data[f"indicators_{tf}"] = compute_all_indicators(d)
+            
+        full_data["order_book"]    = self.market.get_order_book(self.symbol)
+        full_data["fear_greed"]    = self.market.get_fear_greed()
+        full_data["coingecko"]     = self.market.get_coingecko_data(self.symbol)
+        full_data["global_market"] = self.market.get_global_market()
+        full_data["recent_trades"] = self.market.get_recent_trades(self.symbol)
+        
+        # 2. News
+        full_data["news"] = self.news_fetcher.get_news_for_symbol(self.symbol)
+        
+        # 3. Strategy Consensus
+        primary_ind = full_data.get(f"indicators_{self.interval}", indicators)
+        results = self.strategy_mgr.run_all_strategies(primary_ind)
+        consensus = self.strategy_mgr.get_weighted_consensus(results)
+        full_data["strategy_consensus"] = consensus
+
+        analyzer = MultiStageAnalyzer(self.symbol, full_data, self.interval)
 
         def on_complete(result):
             ai_decision   = result["decision"]
             ai_confidence = result["confidence"]
-            self._log(f"🤖 AI verdict: {ai_decision} | Confidence: {ai_confidence}%")
+            self._log(f"🤖 AI blender verdict: {ai_decision} | Confidence: {ai_confidence}%")
 
             if ai_decision == "BUY" and ai_confidence >= self.min_confidence:
                 self._log(f"✅ AI confirms BUY ({ai_confidence}% ≥ {self.min_confidence}%)")
@@ -409,7 +435,50 @@ class AutoTrader:
                 self._log(f"⏸️ AI: {ai_decision} ({ai_confidence}%) — no entry, continuing scan")
 
         analyzer.run_full_analysis_async(
-            on_progress=lambda s, m: self._log(m),
+            on_progress=lambda s, m: self._log(m) if "Stage" in m or "FINAL" in m else None,
+            on_complete=on_complete,
+        )
+
+    def _analyze_with_ai_then_sell_or_hold(self, indicators, current_price: float, standard_reason: str):
+        """Runs full 6-stage AI analysis to decide if an exit should be approved."""
+        self._log("⏳ Collecting full market context for Exit Blender...")
+        full_data = {}
+        
+        frames = self.market.get_multi_timeframe(self.symbol)
+        for tf, d in frames.items():
+            full_data[f"indicators_{tf}"] = compute_all_indicators(d)
+            
+        full_data["order_book"]    = self.market.get_order_book(self.symbol)
+        full_data["fear_greed"]    = self.market.get_fear_greed()
+        full_data["coingecko"]     = self.market.get_coingecko_data(self.symbol)
+        full_data["global_market"] = self.market.get_global_market()
+        full_data["recent_trades"] = self.market.get_recent_trades(self.symbol)
+        full_data["news"]          = self.news_fetcher.get_news_for_symbol(self.symbol)
+        
+        primary_ind = full_data.get(f"indicators_{self.interval}", indicators)
+        results = self.strategy_mgr.run_all_strategies(primary_ind)
+        consensus = self.strategy_mgr.get_weighted_consensus(results)
+        full_data["strategy_consensus"] = consensus
+
+        from core.ai_engine import MultiStageAnalyzer
+        analyzer = MultiStageAnalyzer(self.symbol, full_data, self.interval)
+
+        def on_complete(result):
+            ai_decision   = result["decision"]
+            ai_confidence = result["confidence"]
+            self._log(f"🤖 AI Exit verdict: {ai_decision} | Confidence: {ai_confidence}%")
+
+            if ai_decision == "SELL":
+                self._log(f"✅ AI confirms standard exit! Executing SELL...")
+                self._close_trade("SELL", current_price, f"{standard_reason} + AI Confirmation")
+                self._state = TraderState.HUNTING
+            elif ai_decision == "HOLD":
+                self._log("⚠️ AI says HOLD — overriding standard exit signal! Holding strong...")
+            else:
+                self._log(f"⏸️ AI: {ai_decision} — ignoring exit for now...")
+
+        analyzer.run_full_analysis_async(
+            on_progress=lambda s, m: self._log(m) if "Stage" in m or "FINAL" in m else None,
             on_complete=on_complete,
         )
 

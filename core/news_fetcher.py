@@ -74,6 +74,15 @@ class NewsFetcher:
         kw = keyword.replace("USDT", "").replace("BTC", "").upper()
         kw_lower = kw.lower()
 
+        # Map common symbols to names
+        name_map = {
+            "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", 
+            "XRP": "ripple", "ADA": "cardano", "DOGE": "dogecoin",
+            "BNB": "binance", "DOT": "polkadot", "AVAX": "avalanche",
+            "LINK": "chainlink", "MATIC": "polygon", "SHIB": "shiba"
+        }
+        kw_name = name_map.get(kw, kw_lower)
+
         for feed_url in ALL_RSS_FEEDS:
             try:
                 feed    = feedparser.parse(feed_url)
@@ -81,14 +90,11 @@ class NewsFetcher:
                 for entry in feed.entries[:30]:
                     title   = entry.get("title", "")
                     summary = entry.get("summary", "")
-                    # Check relevance: keyword, crypto generally, or finance
+                    # Strict relevance: only the exact coin symbol or name
                     relevant = (
-                        kw_lower in title.lower()
-                        or kw_lower in summary.lower()
-                        or "bitcoin" in title.lower()
-                        or "crypto" in title.lower()
-                        or "blockchain" in title.lower()
-                        or "market" in title.lower()
+                        kw_lower in title.lower().split()
+                        or kw_name in title.lower()
+                        or kw_name in summary.lower()
                     )
                     if relevant:
                         articles.append({
@@ -109,11 +115,14 @@ class NewsFetcher:
     # ── Reddit (via RSS) ──────────────────────────────────────────────────────
 
     def fetch_reddit(self, symbol: str) -> List[dict]:
-        base = symbol.replace("USDT", "").lower()
-        subreddits = ["CryptoCurrency", f"{base}", "Bitcoin", "ethfinance",
-                      "CryptoMarkets", "SatoshiStreetBets"]
+        base = symbol.replace("USDT", "").replace("BTC", "").upper()
+        name_map = {
+            "BTC": "Bitcoin", "ETH": "ethereum", "SOL": "solana", "DOGE": "dogecoin", "ADA": "cardano"
+        }
+        sub_name = name_map.get(base, base.lower())
+        subreddits = [sub_name, "CryptoCurrency"] # Focus strictly on the coin and general crypto
         articles = []
-        for sub in subreddits[:3]:
+        for sub in subreddits:
             try:
                 r = self.session.get(
                     f"https://www.reddit.com/r/{sub}/hot.json",

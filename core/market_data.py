@@ -58,9 +58,9 @@ class MarketData:
         return df
 
     def get_multi_timeframe(self, symbol: str) -> Dict[str, pd.DataFrame]:
-        """جلب البيانات على 3 أطر زمنية دفعة واحدة"""
+        """جلب البيانات على أطر زمنية متعددة لتشمل الأساسي والمتقدم"""
         frames = {}
-        for interval, limit in [("1h", 200), ("4h", 150), ("1d", 100)]:
+        for interval, limit in [("15m", 250), ("1h", 200), ("4h", 150), ("1d", 100)]:
             try:
                 frames[interval] = self.get_klines(symbol, interval, limit=limit)
             except Exception as e:

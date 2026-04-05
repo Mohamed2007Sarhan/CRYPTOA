@@ -6,7 +6,8 @@ import threading
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTextEdit, QProgressBar, QTabWidget,
-    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter
+    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
+    QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot
 from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor
@@ -30,9 +31,10 @@ class SignalUpdater(QThread):
     ai_progressed    = pyqtSignal(str, str)
     ai_completed     = pyqtSignal(dict)
 
-    def __init__(self, symbol: str):
+    def __init__(self, symbol: str, primary_tf: str = "1h"):
         super().__init__()
         self.symbol       = symbol
+        self.primary_tf   = primary_tf
         self.market       = MarketData()
         self.news_fetcher = NewsFetcher()
         self.strategy_mgr = StrategyManager()
@@ -63,7 +65,7 @@ class SignalUpdater(QThread):
                 ind["low_24h"]    = float(ticker.get("lowPrice", 0))
                 self._full_data[f"indicators_{tf}"] = ind
             self._full_data["ticker"] = ticker
-            self.market_updated.emit(self._full_data.get("indicators_1h", {}))
+            self.market_updated.emit(self._full_data.get(f"indicators_{self.primary_tf}", {}))
         except Exception as e:
             self.market_updated.emit({"error": str(e)})
 
@@ -94,7 +96,7 @@ class SignalUpdater(QThread):
     def _discover_strategies(self):
         if self._stop_flag:
             return
-        ind = self._full_data.get("indicators_1h", {})
+        ind = self._full_data.get(f"indicators_{self.primary_tf}", {})
         if not ind:
             return
         self.strategy_discovered.emit("🌐 Searching for optimal strategies online + AI generation...")
@@ -119,7 +121,7 @@ class SignalUpdater(QThread):
     # ── Strategy Evaluation ────────────────────────────────────────────────
     def _run_strategies(self):
         try:
-            ind = self._full_data.get("indicators_1h", {})
+            ind = self._full_data.get(f"indicators_{self.primary_tf}", {})
             if ind:
                 results   = self.strategy_mgr.run_all_strategies(ind)
                 consensus = self.strategy_mgr.get_weighted_consensus(results)
@@ -132,7 +134,7 @@ class SignalUpdater(QThread):
     # ── AI 6-Stage Analysis ────────────────────────────────────────────────
     def _run_ai(self):
         try:
-            analyzer = MultiStageAnalyzer(self.symbol, self._full_data)
+            analyzer = MultiStageAnalyzer(self.symbol, self._full_data, self.primary_tf)
 
             def on_progress(stage, msg):
                 if not self._stop_flag:
@@ -224,9 +226,23 @@ class Dashboard(QWidget):
         """)
         self.refresh_btn.clicked.connect(self.start_analysis)
 
+        self.tf_combo = QComboBox()
+        self.tf_combo.addItems(["15m", "1h", "4h", "1d"])
+        self.tf_combo.setCurrentText("1h")
+        self.tf_combo.setFixedSize(60, 30)
+        self.tf_combo.setStyleSheet("""
+            QComboBox { background:#21262D; color:#8B949E; border:1px solid #30363D; border-radius:6px; }
+            QComboBox::drop-down { border:none; }
+        """)
+
+        tf_lbl = QLabel("Timeframe (Candle):")
+        tf_lbl.setStyleSheet("color:#8B949E; font-size:12px; font-weight:bold;")
+
         top.addWidget(back)
         top.addWidget(pair)
         top.addStretch()
+        top.addWidget(tf_lbl)
+        top.addWidget(self.tf_combo)
         top.addWidget(self.refresh_btn)
         layout.addLayout(top)
 
@@ -320,7 +336,7 @@ class Dashboard(QWidget):
         # 6 stage indicators
         self._stages = {}
         for key, lbl in [
-            ("stage1",     "1️⃣ Technical 1h"),
+            ("stage1",     "1️⃣ Primary Technical"),
             ("stage2_mtf", "2️⃣ Multi-Timeframe"),
             ("stage3",     "3️⃣ DeepSeek AI"),
             ("stage4",     "4️⃣ Llama Sentiment"),
@@ -340,13 +356,14 @@ class Dashboard(QWidget):
         ll.addStretch()
 
         # Trade levels
-        self._fg_stat   = self._stat("Fear/Greed", "—", "#F59E0B")
+        self._type_stat  = self._stat("Trade Type", "—")
+        self._fg_stat    = self._stat("Fear/Greed", "—", "#F59E0B")
         self._entry_stat = self._stat("Entry",      "—")
         self._sl_stat    = self._stat("Stop Loss",  "—", "#EF4444")
         self._tp1_stat   = self._stat("Target 1",   "—", "#22C55E")
         self._tp2_stat   = self._stat("Target 2",   "—", "#16A34A")
         self._rr_stat    = self._stat("Risk:Reward","—", "#6366F1")
-        for st in [self._fg_stat, self._entry_stat, self._sl_stat,
+        for st in [self._type_stat, self._fg_stat, self._entry_stat, self._sl_stat,
                    self._tp1_stat, self._tp2_stat, self._rr_stat]:
             ll.addWidget(st)
 
@@ -505,7 +522,8 @@ class Dashboard(QWidget):
         self.refresh_btn.setEnabled(False)
         self.status_lbl.setText("🔄 Analysis running…")
 
-        self._updater = SignalUpdater(self.symbol)
+        primary_tf = self.tf_combo.currentText()
+        self._updater = SignalUpdater(self.symbol, primary_tf=primary_tf)
         self._updater.market_updated.connect(self._on_market)
         self._updater.news_updated.connect(self._on_news)
         self._updater.strategy_updated.connect(self._on_strategies)
@@ -522,6 +540,8 @@ class Dashboard(QWidget):
         self.decision_text.setStyleSheet("font-size:22px;font-weight:bold;color:#8B949E;")
         self.conf_lbl.setText("Confidence: —")
         self.conf_bar.setValue(0)
+        self._type_stat._vl.setText("—")
+        self._type_stat._vl.setStyleSheet("color:#F0F6FC;font-size:11px;font-weight:bold;background:transparent;")
         for dot in self._stages.values():
             dot.setStyleSheet("color:#30363D; font-size:11px;")
         self.strategy_table.setRowCount(0)
@@ -696,6 +716,17 @@ class Dashboard(QWidget):
         # Update F&G card
         fc = "#22C55E" if fg < 35 else ("#EF4444" if fg > 65 else "#F59E0B")
         self.fg_card.update_value(f"{fg}/100", fc)
+
+        # Update Trade Type explicitly
+        if decision == "BUY":
+            self._type_stat._vl.setText("LONG 🟢")
+            self._type_stat._vl.setStyleSheet("color:#22C55E;font-size:12px;font-weight:bold;background:transparent;")
+        elif decision == "SELL":
+            self._type_stat._vl.setText("SHORT 🔴")
+            self._type_stat._vl.setStyleSheet("color:#EF4444;font-size:12px;font-weight:bold;background:transparent;")
+        else:
+            self._type_stat._vl.setText("HOLD ⚖️")
+            self._type_stat._vl.setStyleSheet("color:#F59E0B;font-size:12px;font-weight:bold;background:transparent;")
 
         # Update stat bars
         def _sv(stat, val):

@@ -1,7 +1,7 @@
 """
 Pre-Candle Predictor
 ====================
-5 minutes before a candle closes, predicts the next candle direction:
+15 minutes before a candle closes, predicts the next candle direction:
   - UP   → BUY  (enter or hold)
   - DOWN → SELL (exit before close)
   - NEUTRAL → HOLD
@@ -30,8 +30,8 @@ TIMEFRAME_SECONDS = {
     "1d":  86400,
 }
 
-# 5 minutes (300 seconds) before candle close — trigger prediction
-PRE_CLOSE_WINDOW = 300
+# 15 minutes (900 seconds) before candle close — trigger prediction
+PRE_CLOSE_WINDOW = 900
 
 
 def get_candle_close_time_ms(interval: str) -> int:

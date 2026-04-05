@@ -5,8 +5,15 @@ DeepSeek V3.2 + Llama 3.3 Nemotron with comprehensive data prompts
 import json
 import re
 import threading
+import time
+import threading
+import time
+import threading
 from typing import Callable, Optional, Dict, Any
 from openai import OpenAI
+import httpx
+import traceback
+import sys
 from config.settings import (
     NVIDIA_API_KEY, NVIDIA_BASE_URL,
     DEEPSEEK_MODEL, LLAMA_MODEL
@@ -14,7 +21,11 @@ from config.settings import (
 
 
 def _get_client() -> OpenAI:
-    return OpenAI(base_url=NVIDIA_BASE_URL, api_key=NVIDIA_API_KEY)
+    return OpenAI(
+        base_url=NVIDIA_BASE_URL, 
+        api_key=NVIDIA_API_KEY,
+        timeout=httpx.Timeout(None)
+    )
 
 
 # ── DeepSeek V3.2 ─────────────────────────────────────────────────────────────
@@ -47,6 +58,11 @@ def analyze_with_deepseek(prompt: str,
                 if on_chunk:
                     on_chunk(content)
     except Exception as e:
+        print("\n=== DEEPSEEK ERROR ===", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        print("======================\n", file=sys.stderr)
+        sys.stderr.flush()
+        sys.stdout.flush()
         err = f"❌ DeepSeek Error: {str(e)}"
         if on_chunk: on_chunk(err)
         if on_done:  on_done(err)
@@ -85,6 +101,11 @@ def analyze_with_llama(prompt: str,
                 full_response.append(content)
                 if on_chunk: on_chunk(content)
     except Exception as e:
+        print("\n=== LLAMA ERROR ===", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        print("===================\n", file=sys.stderr)
+        sys.stderr.flush()
+        sys.stdout.flush()
         err = f"❌ Llama Error: {str(e)}"
         if on_chunk: on_chunk(err)
         if on_done:  on_done(err)
@@ -124,15 +145,16 @@ class MultiStageAnalyzer:
     Stage 6: Weighted Voting System + Final Decision
     """
 
-    def __init__(self, symbol: str, full_data: Dict[str, Any]):
-        self.symbol    = symbol
-        self.full_data = full_data  # contains all collected data
-        self.results   = {}
+    def __init__(self, symbol: str, full_data: Dict[str, Any], primary_tf: str = "1h"):
+        self.symbol     = symbol
+        self.full_data  = full_data
+        self.primary_tf = primary_tf
+        self.results    = {}
 
-    # ─── Stage 1: Technical Analysis (1h) ────────────────────────────────────
+    # ─── Stage 1: Technical Analysis ────────────────────────────────────
 
     def run_stage1(self) -> dict:
-        ind   = self.full_data.get("indicators_1h", {})
+        ind   = self.full_data.get(f"indicators_{self.primary_tf}", {})
         score = 50
         votes = []
 
@@ -239,7 +261,7 @@ class MultiStageAnalyzer:
     # ─── Stage 3: DeepSeek Deep Technical Analysis ────────────────────────────
 
     def _build_deepseek_prompt(self) -> str:
-        ind_1h = self.full_data.get("indicators_1h", {})
+        ind_pri = self.full_data.get(f"indicators_{self.primary_tf}", {})
         ind_4h = self.full_data.get("indicators_4h", {})
         ind_1d = self.full_data.get("indicators_1d", {})
         ob     = self.full_data.get("order_book", {})
@@ -252,17 +274,17 @@ class MultiStageAnalyzer:
         return f"""You are a professional cryptocurrency trading expert with 15 years of experience.
 Perform a comprehensive deep analysis of {self.symbol} and make a well-reasoned trading decision.
 
-═══ TECHNICAL DATA — 1 Hour Timeframe ═══
-• Price: {ind_1h.get('price', 'N/A')} USDT
-• 24h Change: {ind_1h.get('change_24h', 'N/A')}%
-• 24h Volume: {ind_1h.get('volume_24h', 'N/A'):,.0f} USDT
-• RSI(14): {ind_1h.get('rsi', 'N/A')}
-• MACD: {ind_1h.get('macd', 'N/A')} | Signal: {ind_1h.get('macd_signal', 'N/A')} | Hist: {ind_1h.get('macd_hist', 'N/A')}
-• Bollinger: ↑{ind_1h.get('bb_upper', 'N/A')} | Mid: {ind_1h.get('bb_mid', 'N/A')} | ↓{ind_1h.get('bb_lower', 'N/A')}
-• EMA20: {ind_1h.get('ema20', 'N/A')} | EMA50: {ind_1h.get('ema50', 'N/A')} | EMA200: {ind_1h.get('ema200', 'N/A')}
-• Stoch K: {ind_1h.get('stoch_k', 'N/A')} | D: {ind_1h.get('stoch_d', 'N/A')}
-• ATR: {ind_1h.get('atr', 'N/A')}
-• Candle Pattern: {ind_1h.get('candle_pattern', 'N/A')}
+═══ TECHNICAL DATA — {self.primary_tf} Timeframe ═══
+• Price: {ind_pri.get('price', 'N/A')} USDT
+• 24h Change: {ind_pri.get('change_24h', 'N/A')}%
+• 24h Volume: {ind_pri.get('volume_24h', 'N/A'):,.0f} USDT
+• RSI(14): {ind_pri.get('rsi', 'N/A')}
+• MACD: {ind_pri.get('macd', 'N/A')} | Signal: {ind_pri.get('macd_signal', 'N/A')} | Hist: {ind_pri.get('macd_hist', 'N/A')}
+• Bollinger: ↑{ind_pri.get('bb_upper', 'N/A')} | Mid: {ind_pri.get('bb_mid', 'N/A')} | ↓{ind_pri.get('bb_lower', 'N/A')}
+• EMA20: {ind_pri.get('ema20', 'N/A')} | EMA50: {ind_pri.get('ema50', 'N/A')} | EMA200: {ind_pri.get('ema200', 'N/A')}
+• Stoch K: {ind_pri.get('stoch_k', 'N/A')} | D: {ind_pri.get('stoch_d', 'N/A')}
+• ATR: {ind_pri.get('atr', 'N/A')}
+• Candle Pattern: {ind_pri.get('candle_pattern', 'N/A')}
 
 ═══ 4 HOUR TIMEFRAME ═══
 • Price: {ind_4h.get('price', 'N/A')} | RSI: {ind_4h.get('rsi', 'N/A')}
@@ -357,24 +379,24 @@ Analyze the following data for {self.symbol} and evaluate market sentiment:
 {gecko_desc}
 
 ═══ YOUR TASK ═══
-1. Analyze news headlines — look for: major events, partnerships, hacks, regulation
-2. Evaluate trader/community sentiment
-3. Identify positive and negative news and their potential impact
-4. Compare current sentiment with Fear & Greed Index
-5. Look for sentiment divergence from price action
+1. Analyze news headlines ruthlessly — ignore fluff. Identify ONLY structural catalysts: partnerships, hacks, regulation, massive inflows, or bankruptcies.
+2. Evaluate trader/community enthusiasm vs. market reality.
+3. Weigh the Fear & Greed Index vs News Momentum: If the market is in "Extreme Greed" but news is bearish, this is a catastrophic reversal signal.
+4. Provide a definitive sentiment rating on the STRICT scale below:
+   [CATASTROPHIC, BEARISH, NEUTRAL, BULLISH, MOONSHOT]
 
 Respond with STRICT JSON only:
 {{
-  "overall_sentiment": "BULLISH" or "BEARISH" or "NEUTRAL",
-  "sentiment_score": number -100 to 100,
+  "overall_sentiment": "CATASTROPHIC/BEARISH/NEUTRAL/BULLISH/MOONSHOT",
+  "sentiment_score": "number 0 to 100",
   "decision": "BUY" or "SELL" or "HOLD",
-  "confidence": number 0-100,
-  "positive_news": ["positive headline 1", "positive headline 2"],
-  "negative_news": ["negative headline 1", "negative headline 2"],
+  "confidence": "number 0-100",
+  "positive_news": ["structural positive catalyst 1", "structural positive catalyst 2"],
+  "negative_news": ["structural negative catalyst 1", "structural negative catalyst 2"],
   "key_events": ["event1", "event2", "event3"],
-  "community_mood": "brief description of community mood",
-  "fear_greed_interpretation": "interpretation of F&G index",
-  "summary": "Detailed English summary (80-150 words)",
+  "community_mood": "brutal reality of community mood",
+  "fear_greed_interpretation": "divergence check against F&G",
+  "summary": "Brutal, decisive 2-sentence summary of impending market movement based strictly on news.",
   "warning": "Warning about dangerous news if any or null"
 }}"""
 
@@ -429,98 +451,133 @@ Respond with STRICT JSON only:
     def make_final_decision(self,
                              s1: dict, s2: dict,
                              s3_raw: dict, s4_raw: dict,
-                             s5: dict, strategy_consensus: dict) -> dict:
+                             s5: dict, strategy_consensus: dict,
+                             on_chunk: Callable[[str], None] = None) -> dict:
         """
-        Advanced weighted voting system:
-        - S1 Technical (1h):       weight 1.0
-        - S2 Multi-TF:             weight 1.8  (major trend confirmation)
-        - S3 DeepSeek:             weight 2.5  (AI technical analysis)
-        - S4 Llama:                weight 1.5  (AI sentiment)
-        - S5 Market Extras:        weight 1.2
-        - Strategy Consensus:      weight 1.5  (20+ strategies)
+        Stage 6: The Ultimate Blender
+        Sends ALL previous stage results to DeepSeek V3.2 for the absolute final decision.
         """
-        votes = {"BUY": 0.0, "SELL": 0.0, "HOLD": 0.0}
+        # Prepare the ultimate prompt
+        fg_val = s5.get('fear_greed_value', 50)
+        buy_press = s5.get('buy_pressure', 50)
+        strat_dec = strategy_consensus.get('decision', 'HOLD')
+        strat_conf = strategy_consensus.get('confidence', 50)
+        
+        prompt = f"""You are the ULTIMATE Crypto Trading Judge (The Blender).
+You must analyze the findings from 5 distinct expert engines for {self.symbol} and make the ABSOLUTE FINAL trading decision.
 
-        def _add(decision: str, confidence: float, weight: float):
-            conf_norm = min(confidence / 100, 1.0)
-            votes[decision] = votes.get(decision, 0) + weight * conf_norm
+═══ STAGE 1: PURE MATH (Technical) ═══
+Decision: {s1.get('decision')} | Score: {s1.get('score', 50)}/100
+Signals: {', '.join(s1.get('signals', [])[:5])}
 
-        # S1
-        _add(s1["decision"],                        s1.get("confidence", 50),   1.0)
-        # S2
-        _add(s2["decision"],                        s2.get("confidence", 50),   1.8)
-        # S3 DeepSeek
-        _add(s3_raw.get("decision", "HOLD"),        s3_raw.get("confidence", 0),2.5)
-        # S4 Llama
-        _add(s4_raw.get("decision", "HOLD"),        s4_raw.get("confidence", 0),1.5)
-        # S5
-        _add(s5["decision"],                        s5.get("confidence", 50),   1.2)
-        # Strategy consensus
-        _add(strategy_consensus.get("decision","HOLD"),
-             strategy_consensus.get("confidence",50), 1.5)
+═══ STAGE 2: MULTI-TIMEFRAME (Trend) ═══
+Decision: {s2.get('decision')} | Confidence: {s2.get('confidence', 50)}%
 
-        total  = sum(votes.values())
-        winner = max(votes, key=votes.get)
-        raw_conf = (votes[winner] / total * 100) if total > 0 else 50
+═══ STAGE 3: AI TECHNICAL ENGINE ═══
+Decision: {s3_raw.get('decision')} | Confidence: {s3_raw.get('confidence', 50)}%
+Suggested Entry: {s3_raw.get('entry_price', 'N/A')} | SL: {s3_raw.get('stop_loss', 'N/A')}
+Targets: {s3_raw.get('take_profit_1', 'N/A')}, {s3_raw.get('take_profit_2', 'N/A')}
+Reasoning: {s3_raw.get('reasoning', 'N/A')}
 
-        # Calculate gap bonus (larger gap between 1st and 2nd = higher confidence)
-        sorted_v = sorted(votes.values(), reverse=True)
-        gap = sorted_v[0] - sorted_v[1] if len(sorted_v) > 1 else 0
-        gap_bonus = min(gap / total * 50, 20)
+═══ STAGE 4: AI SENTIMENT ENGINE (News & Crowd) ═══
+Sentiment: {s4_raw.get('overall_sentiment')} | Score: {s4_raw.get('sentiment_score', 0)}
+Decision: {s4_raw.get('decision')}
+Summary: {s4_raw.get('summary', 'N/A')}
 
-        final_confidence = min(int(raw_conf + gap_bonus), 97)
+═══ STAGE 5: MARKET CONTEXT ═══
+Fear & Greed: {fg_val}/100 | Buy Pressure: {buy_press}%
+Strategies Consensus: {strat_dec} ({strat_conf}% confidence)
 
-        # Reduce confidence if AI had errors
-        if "❌" in str(s3_raw) or "❌" in str(s4_raw):
-            final_confidence = min(final_confidence, 60)
+═══ YOUR TASK ═══
+Blend all of this data. Weigh the Pure Math, the Sentiment, and the AI Technicals together.
+Resolve any conflicts. If S1 is SELL but S3 and S4 are BUY, you must decide who is right.
 
-        # Entry, SL, TP from DeepSeek — fallback to ATR-based
-        price = self.full_data.get("indicators_1h", {}).get("price", 0) or 0
-        atr   = self.full_data.get("indicators_1h", {}).get("atr", 0) or 0
+Respond with STRICT JSON only (no text outside JSON). The JSON must exactly match this format:
+{{
+  "decision": "BUY" or "SELL" or "HOLD",
+  "confidence": number 0-100,
+  "entry_price": suggested optimal entry price number,
+  "stop_loss": strictly proper stop loss number (if SHORT/SELL, SL should be > Entry),
+  "take_profit_1": target 1 number,
+  "take_profit_2": target 2 number,
+  "risk_reward_ratio": "e.g. 2.5:1",
+  "reasoning": "Detailed final summary explaining why this decision was reached after blending all stages (150-250 words)"
+}}"""
 
-        entry  = s3_raw.get("entry_price") or price
-        sl     = s3_raw.get("stop_loss")   or (price * 0.98 if winner == "BUY" else price * 1.02)
-        tp1    = s3_raw.get("take_profit_1") or (price * 1.04 if winner == "BUY" else price * 0.96)
-        tp2    = s3_raw.get("take_profit_2") or (price * 1.08 if winner == "BUY" else price * 0.92)
+        # Call DeepSeek as the Final Blender
+        while True:
+            raw = analyze_with_deepseek(prompt, on_chunk=on_chunk)
+            if not raw.startswith("❌"):
+                final_json = _parse_json(raw)
+                if final_json and "decision" in final_json:
+                    # If BUY/SELL, ensure it didn't output 0s
+                    dec = final_json["decision"]
+                    if dec in ["BUY", "SELL"]:
+                        sl = final_json.get("stop_loss")
+                        if sl in [None, 0, 0.0, "0", "N/A"]:
+                            if on_chunk: on_chunk("\n⚠️ الشبكة أرجعت أصفار في أمر التداول. محاولة إجبارية لإصلاح الأرقام...\n")
+                            time.sleep(2)
+                            continue
+                    break
+            
+            if on_chunk: on_chunk("\n⚠️ اتصال معلق أو رد غير مكتمل. جاري المحاولة بشكل لا نهائي...\n")
+            time.sleep(3)
 
-        # ATR-based SL/TP if DeepSeek didn't provide them
+        dec = final_json["decision"]
+        price = self.full_data.get(f"indicators_{self.primary_tf}", {}).get("price", 0) or 0
+        atr   = self.full_data.get(f"indicators_{self.primary_tf}", {}).get("atr", 0) or 0
+        
+        # Ensure SL/TP are provided if missing or if DeepSeek outputted 0
+        if not final_json.get("entry_price") or float(final_json.get("entry_price")) == 0:
+            final_json["entry_price"] = price
+
         if atr and price:
-            if not s3_raw.get("stop_loss"):
-                sl  = price - 2 * atr if winner == "BUY" else price + 2 * atr
-                tp1 = price + 3 * atr if winner == "BUY" else price - 3 * atr
-                tp2 = price + 5 * atr if winner == "BUY" else price - 5 * atr
+            sl = final_json.get("stop_loss")
+            tp1 = final_json.get("take_profit_1")
+            
+            # If values are missing / zero, fallback
+            if sl in [None, 0, 0.0, "0", "N/A"]:
+                final_json["stop_loss"] = price - 2 * atr if dec in ["BUY", "HOLD"] else price + 2 * atr
+            if tp1 in [None, 0, 0.0, "0", "N/A"]:
+                final_json["take_profit_1"] = price + 3 * atr if dec in ["BUY", "HOLD"] else price - 3 * atr
+            if final_json.get("take_profit_2") in [None, 0, 0.0, "0", "N/A"]:
+                final_json["take_profit_2"] = price + 5 * atr if dec in ["BUY", "HOLD"] else price - 5 * atr
+                
+            # Logically Validate Direction (Auto-correct an AI hallucination)
+            ep = float(final_json["entry_price"])
+            sl = float(final_json["stop_loss"])
+            if dec == "BUY" and sl >= ep:
+                final_json["stop_loss"] = ep - 2 * atr
+            elif dec == "SELL" and sl <= ep:
+                final_json["stop_loss"] = ep + 2 * atr
 
         return {
-            "decision":           winner,
-            "confidence":         final_confidence,
-            "votes":              votes,
+            "decision":           dec,
+            "confidence":         final_json.get("confidence", 50),
             "vote_breakdown": {
-                "technical_1h":     s1["decision"],
+                "technical_pure":   s1["decision"],
                 "multi_timeframe":  s2["decision"],
-                "deepseek_ai":      s3_raw.get("decision", "?"),
+                "deepseek_tech":    s3_raw.get("decision", "?"),
                 "llama_sentiment":  s4_raw.get("decision", "?"),
                 "market_extras":    s5["decision"],
-                "strategies":       strategy_consensus.get("decision", "?"),
+                "strategies":       strat_dec,
             },
-            "entry_price":        entry,
-            "stop_loss":          sl,
-            "take_profit_1":      tp1,
-            "take_profit_2":      tp2,
-            "risk_reward_ratio":  s3_raw.get("risk_reward_ratio", "2:1"),
+            "entry_price":        final_json.get("entry_price", price),
+            "stop_loss":          final_json.get("stop_loss"),
+            "take_profit_1":      final_json.get("take_profit_1"),
+            "take_profit_2":      final_json.get("take_profit_2"),
+            "risk_reward_ratio":  final_json.get("risk_reward_ratio", "2:1"),
             "trend_strength":     s3_raw.get("trend_strength", "—"),
-            "key_levels":         s3_raw.get("key_levels", {}),
-            "reasoning":          s3_raw.get("reasoning", ""),
-            "key_signals":        (s3_raw.get("key_signals", []) +
-                                   s5["signals"][:2]),
+            "reasoning":          final_json.get("reasoning", ""),
             "sentiment_summary":  s4_raw.get("summary", ""),
             "positive_news":      s4_raw.get("positive_news", []),
             "negative_news":      s4_raw.get("negative_news", []),
             "key_events":         s4_raw.get("key_events", []),
             "warning":            s3_raw.get("warning") or s4_raw.get("warning"),
-            "fear_greed":         s5.get("fear_greed_value", 50),
-            "buy_pressure":       s5.get("buy_pressure", 50),
-            "s1_score":           s1["score"],
-            "s5_score":           s5["score"],
+            "fear_greed":         fg_val,
+            "buy_pressure":       buy_press,
+            "s1_score":           s1.get("score", 50),
+            "s5_score":           s5.get("score", 50),
         }
 
     # ─── Run All 6 Stages ─────────────────────────────────────────────────────
@@ -546,39 +603,59 @@ Respond with STRICT JSON only:
                 on_progress("stage2_detail", f"   • {d}")
 
             # ── Stage 3: DeepSeek ──
-            on_progress("stage3", "🤖 Stage 3: DeepSeek V3.2 — Deep technical analysis…")
-            ds_raw = analyze_with_deepseek(
-                self._build_deepseek_prompt(),
-                on_chunk=lambda c: on_progress("stage3_stream", c),
-            )
-            s3 = _parse_json(ds_raw)
-            if not s3:
-                s3 = {"decision": "HOLD", "confidence": 40, "reasoning": ds_raw[:300]}
+            on_progress("stage3", "🤖 Stage 3: AI Technical (Math + DeepSeek)…")
+            while True:
+                ds_raw = analyze_with_deepseek(
+                    self._build_deepseek_prompt(),
+                    on_chunk=lambda c: on_progress("stage3_stream", c),
+                )
+                if not ds_raw.startswith("❌"):
+                    s3 = _parse_json(ds_raw)
+                    if s3 and "decision" in s3:
+                        dec = s3["decision"]
+                        if dec in ["BUY", "SELL"]:
+                            sl = s3.get("stop_loss")
+                            if sl in [None, 0, 0.0, "0", "N/A"]:
+                                on_progress("stage3_stream", "\n⚠️ Stage 3 أرجع أصفار بالخطأ. إعادة المحاولة...\n")
+                                time.sleep(2)
+                                continue
+                        break
+                on_progress("stage3_stream", "\n⚠️ خطأ شبكة Stage 3. إعادة المحاولة لا نهائياً...\n")
+                time.sleep(3)
+                
             self.results["stage3"] = s3
             on_progress("stage3", f"✅ Stage 3 DeepSeek: {s3.get('decision','?')}  ({s3.get('confidence','?')}% confidence)  |  R:R = {s3.get('risk_reward_ratio','?')}")
 
             # ── Stage 4: Llama ──
-            on_progress("stage4", "📰 Stage 4: Llama 3.3 — News & sentiment analysis…")
-            llama_raw = analyze_with_llama(
-                self._build_llama_prompt(),
-                on_chunk=lambda c: on_progress("stage4_stream", c),
-            )
-            s4 = _parse_json(llama_raw)
-            if not s4:
-                s4 = {"decision": "HOLD", "confidence": 40, "summary": llama_raw[:300]}
+            on_progress("stage4", "📰 Stage 4: AI Sentiment (News + Llama)…")
+            while True:
+                llama_raw = analyze_with_llama(
+                    self._build_llama_prompt(),
+                    on_chunk=lambda c: on_progress("stage4_stream", c),
+                )
+                if not llama_raw.startswith("❌"):
+                    s4 = _parse_json(llama_raw)
+                    if s4 and "decision" in s4:
+                        break
+                on_progress("stage4_stream", "\n⚠️ خطأ شبكة Stage 4. إعادة المحاولة لا نهائياً...\n")
+                time.sleep(3)
+                
             self.results["stage4"] = s4
             on_progress("stage4", f"✅ Stage 4 Llama: {s4.get('decision','?')}  |  Sentiment: {s4.get('overall_sentiment','?')}  ({s4.get('sentiment_score','?')})")
 
             # ── Stage 5 ──
-            on_progress("stage5", "⚖️ Stage 5: Fear & Greed + Order Book + Global market…")
+            on_progress("stage5", "⚖️ Stage 5: Market Context (F&G + Order Book)…")
             s5 = self.run_stage5()
             self.results["stage5"] = s5
             on_progress("stage5", f"✅ Stage 5: {s5['decision']}  |  F&G: {s5['fear_greed_value']}/100  |  Buy pressure: {s5['buy_pressure']}%")
 
             # ── Stage 6 ──
-            on_progress("stage6", "🔮 Stage 6: Weighted voting — computing final decision…")
+            on_progress("stage6", "🔮 Stage 6: The Ultimate Blender (DeepSeek Verification)…")
             strat_consensus = self.full_data.get("strategy_consensus", {})
-            final = self.make_final_decision(s1, s2, s3, s4, s5, strat_consensus)
+            final = self.make_final_decision(
+                s1, s2, s3, s4, s5, strat_consensus,
+                on_chunk=lambda c: on_progress("stage6_stream", c)
+            )
             self.results["stage6"] = final
 
             dec  = final["decision"]
