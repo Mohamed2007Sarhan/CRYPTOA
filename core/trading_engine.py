@@ -130,9 +130,13 @@ class AutoTrader:
         self._thread: Optional[threading.Thread] = None
 
         # Current trade
-        self._in_trade     = False
-        self._entry_price  = 0.0
-        self._open_order   = None
+        self._in_trade         = False
+        self._entry_price      = 0.0
+        self._open_order       = None
+        self._current_sl_price = 0.0
+        self._current_tp_price = 0.0
+        self._last_guard_log   = 0.0
+        self._last_ai_guard_candle_ms = 0
 
         # Indicators cache shared with AnomalyGuard
         self._latest_indicators: dict = {}
@@ -291,104 +295,91 @@ class AutoTrader:
 
     def _guarding_cycle(self):
         """
-        Sleeps until 5 minutes before candle close, then decides:
-        - SL/TP hit       → sell → HUNTING
-        - DOWN predicted  → sell → HUNTING
-        - UP predicted    → hold, wait for next candle
+        Polls every 10 seconds for standard static SL/TP.
+        If less than 5 minutes remain to the candle close, asks the AI if the setup is still valid.
         """
-        secs_left = seconds_until_candle_close(self.interval)
-        sleep_sec = max(0.0, secs_left - PRE_CLOSE_WINDOW_SEC)
-
-        candle_sec = TIMEFRAME_SECONDS.get(self.interval, 3600)
-        if candle_sec <= 600:
-            sleep_sec = 0   # short timeframes: check immediately
-
-        if sleep_sec > 0:
-            sleep_m = int(sleep_sec // 60)
-            sleep_s = int(sleep_sec % 60)
-            pnl_now = 0.0
-            if self._entry_price > 0:
-                try:
-                    mid = self.market.get_price(self.symbol)
-                    pnl_now = (mid - self._entry_price) / self._entry_price * 100
-                except Exception:
-                    pass
-            self._log(
-                f"⚔️ [GUARDING] In trade @ {self._entry_price:.4f} | "
-                f"Current PnL: {pnl_now:+.2f}% | "
-                f"Next check in {sleep_m}m {sleep_s}s ({PRE_CLOSE_WINDOW_SEC//60}m before close)"
-            )
-            ok = _interruptible_sleep(sleep_sec, lambda: self._running)
-            if not ok:
-                return
-
-        if not self._running:
+        poll_interval = 10.0
+        
+        # 1. Fetch live price
+        try:
+            current_price = self.market.get_price(self.symbol)
+        except Exception as e:
+            self._log(f"⚠️ Failed to update price: {e}")
+            _interruptible_sleep(poll_interval, lambda: self._running)
             return
 
-        # Live data at check time
-        self._log(
-            f"🔔 [GUARDING] Pre-close check | {self.symbol} @ {time.strftime('%H:%M:%S')}"
-        )
-        df = self._safe_get_klines()
-        if df is None:
-            return
-
-        indicators    = compute_all_indicators(df)
-        current_price = float(df.iloc[-1]["close"])
-        self._latest_indicators = indicators
-        self._emit_status(current_price, indicators)
-
-        # Stop Loss / Take Profit
-        sl = self._entry_price * (1 - self.stop_loss_pct / 100)
-        tp = self._entry_price * (1 + self.take_profit_pct / 100)
-
-        if current_price <= sl:
+        sl = self._current_sl_price
+        tp = self._current_tp_price
+        
+        # 2. Check traditional Stop Loss / Take profit
+        if current_price <= sl and sl > 0:
             self._close_trade("SELL", current_price, f"🛑 Stop Loss hit @ {sl:.4f}")
             self._state = TraderState.HUNTING
             self._log("🔍 Switched to HUNTING — searching for next opportunity...")
             return
 
-        if current_price >= tp:
+        if current_price >= tp and tp > 0:
             self._close_trade("SELL", current_price, f"🎯 Take Profit hit @ {tp:.4f}")
             self._state = TraderState.HUNTING
             self._log("🔍 Switched to HUNTING — searching for next opportunity...")
             return
 
-        # Pre-close prediction
-        pred  = predict_candle_direction(df, indicators)
-        arrow = "📈" if pred["prediction"] == "UP" else (
-                "📉" if pred["prediction"] == "DOWN" else "➡️")
-        self._log(
-            f"  {arrow} Prediction: {pred['prediction']} | "
-            f"Confidence: {pred['confidence']:.0f}% | {pred['reason'][:70]}"
-        )
-
-        # Strategy consensus
-        consensus = self._get_consensus(indicators)
-        self._log(f"  📊 Consensus: {consensus['decision']} ({consensus['confidence']}%)")
-
-        # Exit decision
-        sell_reason = None
-
-        if pred["prediction"] == "DOWN" and pred["confidence"] >= 40:
-            sell_reason = f"⏳ DOWN predicted ({pred['confidence']:.0f}%) before candle close"
-        elif consensus["decision"] == "SELL" and pred["prediction"] != "UP":
-            sell_reason = f"📉 SELL consensus ({consensus['confidence']}%) + no bullish prediction"
-
-        if sell_reason:
-            if self.use_ai:
-                self._log("🤖 Sending standard exit signals to Ultimate Blender for verification...")
-                self._analyze_with_ai_then_sell_or_hold(indicators, current_price, sell_reason)
-            else:
-                self._close_trade("SELL", current_price, sell_reason)
-                self._state = TraderState.HUNTING
-                self._log("🔍 Switched to HUNTING — looking for next buy opportunity...")
-        else:
-            pnl_now = (current_price - self._entry_price) / self._entry_price * 100
+        # 3. Log periodically (every 60 seconds) so we don't spam the UI
+        now = time.time()
+        pnl_now = (current_price - self._entry_price) / self._entry_price * 100
+        secs_left = seconds_until_candle_close(self.interval)
+        
+        if not hasattr(self, '_last_guard_log') or now - self._last_guard_log > 60:
+            check_in = max(0, int(secs_left - PRE_CLOSE_WINDOW_SEC))
             self._log(
-                f"  ✅ Holding position | PnL: {pnl_now:+.2f}% | "
-                f"SL: {sl:.4f} | TP: {tp:.4f}"
+                f"⚔️ [GUARDING] Live PnL: {pnl_now:+.2f}% | "
+                f"SL: {sl:.4f} | TP: {tp:.4f} | AI Check in ~{check_in // 60}m"
             )
+            self._last_guard_log = now
+
+        # 4. Check if we reached the final 5 minutes window for AI Verification
+        if secs_left <= PRE_CLOSE_WINDOW_SEC:
+            # ensure we only check once per candle
+            candle_close_ms = get_candle_close_time_ms(self.interval)
+            if getattr(self, '_last_ai_guard_candle_ms', 0) != candle_close_ms:
+                self._last_ai_guard_candle_ms = candle_close_ms
+                
+                self._log(f"🔔 [GUARDING] Pre-close AI check | {self.symbol} @ {time.strftime('%H:%M:%S')}")
+                df = self._safe_get_klines()
+                if df is not None:
+                    indicators    = compute_all_indicators(df)
+                    self._latest_indicators = indicators
+                    self._emit_status(current_price, indicators)
+
+                    # Pre-close prediction
+                    pred  = predict_candle_direction(df, indicators)
+                    arrow = "📈" if pred["prediction"] == "UP" else ("📉" if pred["prediction"] == "DOWN" else "➡️")
+                    self._log(f"  {arrow} Prediction: {pred['prediction']} | Confidence: {pred['confidence']:.0f}%")
+
+                    # Strategy consensus
+                    consensus = self._get_consensus(indicators)
+                    self._log(f"  📊 Consensus: {consensus['decision']} ({consensus['confidence']}%)")
+
+                    # Exit decision
+                    sell_reason = None
+                    if pred["prediction"] == "DOWN" and pred["confidence"] >= 40:
+                        sell_reason = f"⏳ DOWN predicted ({pred['confidence']:.0f}%) before candle close"
+                    elif consensus["decision"] == "SELL" and pred["prediction"] != "UP":
+                        sell_reason = f"📉 SELL consensus ({consensus['confidence']}%) + no bullish prediction"
+
+                    if sell_reason:
+                        if self.use_ai:
+                            self._log("🤖 Sending standard exit signals to Ultimate Blender for verification...")
+                            self._analyze_with_ai_then_sell_or_hold(indicators, current_price, sell_reason)
+                            return
+                        else:
+                            self._close_trade("SELL", current_price, sell_reason)
+                            self._state = TraderState.HUNTING
+                            self._log("🔍 Switched to HUNTING — looking for next buy opportunity...")
+                            return
+                            
+        # Sleep exactly 10s and loop again
+        _interruptible_sleep(poll_interval, lambda: self._running)
 
     # ══════════════════════════════════════════════════════════════════════════
     # AI Analysis
@@ -428,7 +419,9 @@ class AutoTrader:
 
             if ai_decision == "BUY" and ai_confidence >= self.min_confidence:
                 self._log(f"✅ AI confirms BUY ({ai_confidence}% ≥ {self.min_confidence}%)")
-                self._open_trade("BUY", current_price)
+                custom_sl = result.get("stop_loss")
+                custom_tp = result.get("take_profit_1")
+                self._open_trade("BUY", current_price, custom_sl=custom_sl, custom_tp=custom_tp)
             elif ai_decision == "SELL":
                 self._log("⚠️ AI says SELL — skipping entry, resuming HUNTING...")
             else:
@@ -486,7 +479,7 @@ class AutoTrader:
     # Trade Execution
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _open_trade(self, side: str, price: float):
+    def _open_trade(self, side: str, price: float, custom_sl: float = None, custom_tp: float = None):
         self._log(f"📈 Opening {side} @ {price:.4f}")
         try:
             account      = self.market.get_account()
@@ -506,8 +499,10 @@ class AutoTrader:
             self._open_order  = order
             self._state       = TraderState.GUARDING   # transition
 
-            sl_price = price * (1 - self.stop_loss_pct / 100)
-            tp_price = price * (1 + self.take_profit_pct / 100)
+            sl_price = float(custom_sl) if custom_sl else price * (1 - self.stop_loss_pct / 100)
+            tp_price = float(custom_tp) if custom_tp else price * (1 + self.take_profit_pct / 100)
+            self._current_sl_price = sl_price
+            self._current_tp_price = tp_price
 
             self._log(
                 f"✅ Trade opened | Qty: {quantity:.6f} | USDT: {trade_usd:.2f} | "
@@ -539,9 +534,11 @@ class AutoTrader:
         try:
             pnl = (price - entry_snap) / entry_snap * 100 if entry_snap > 0 else 0
 
-            self._in_trade    = False
-            self._entry_price = 0.0
-            self._open_order  = None
+            self._in_trade         = False
+            self._entry_price      = 0.0
+            self._current_sl_price = 0.0
+            self._current_tp_price = 0.0
+            self._open_order       = None
 
             # Update stats
             self._trades_count  += 1
@@ -619,9 +616,11 @@ class AutoTrader:
         pnl = ((current_price - entry_snap) / entry_snap * 100
                if entry_snap > 0 else 0)
 
-        self._in_trade    = False
-        self._entry_price = 0.0
-        self._open_order  = None
+        self._in_trade         = False
+        self._entry_price      = 0.0
+        self._current_sl_price = 0.0
+        self._current_tp_price = 0.0
+        self._open_order       = None
 
         # Return to HUNTING immediately
         self._state = TraderState.HUNTING
