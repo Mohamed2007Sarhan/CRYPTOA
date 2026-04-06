@@ -38,6 +38,39 @@ class NewsFetcher:
         self._cache: Dict[str, dict] = {}
         self._cache_ttl = 240   # 4 minutes
 
+    @staticmethod
+    def _extract_base_asset(symbol: str) -> str:
+        """Extract base asset from trading pair like BTCUSDT -> BTC."""
+        if not symbol:
+            return ""
+        s = symbol.upper().strip()
+        quote_suffixes = ("USDT", "USDC", "BUSD", "FDUSD", "BTC", "ETH", "BNB")
+        for q in quote_suffixes:
+            if s.endswith(q) and len(s) > len(q):
+                return s[:-len(q)]
+        return s
+
+    @staticmethod
+    def _symbol_to_keywords(symbol: str) -> List[str]:
+        base = NewsFetcher._extract_base_asset(symbol)
+        name_map = {
+            "BTC": ["bitcoin", "btc"],
+            "ETH": ["ethereum", "eth"],
+            "SOL": ["solana", "sol"],
+            "XRP": ["ripple", "xrp"],
+            "ADA": ["cardano", "ada"],
+            "DOGE": ["dogecoin", "doge"],
+            "BNB": ["binance coin", "bnb"],
+            "DOT": ["polkadot", "dot"],
+            "AVAX": ["avalanche", "avax"],
+            "LINK": ["chainlink", "link"],
+            "MATIC": ["polygon", "matic", "pol"],
+            "SHIB": ["shiba", "shib", "shiba inu"],
+        }
+        keywords = [base.lower()]
+        keywords.extend(name_map.get(base, []))
+        return list(dict.fromkeys(keywords))
+
     # ── CryptoPanic ──────────────────────────────────────────────────────────
 
     def fetch_cryptopanic(self, symbol: str, limit: int = 30) -> List[dict]:
@@ -173,6 +206,43 @@ class NewsFetcher:
             print(f"[News] Google News error: {e}")
         return []
 
+    # ── Blockchain.com Explorer News ─────────────────────────────────────────
+
+    def fetch_blockchain_explorer_news(self, symbol: str, max_articles: int = 35) -> List[dict]:
+        base = self._extract_base_asset(symbol)
+        if not base:
+            return []
+        try:
+            r = self.session.get(
+                "https://api.blockchain.info/news/articles",
+                params={"limit": max_articles, "assets": base},
+                timeout=12,
+            )
+            if r.status_code != 200:
+                return []
+
+            payload = r.json()
+            raw_articles = payload.get("articles", []) if isinstance(payload, dict) else []
+
+            articles = []
+            for item in raw_articles[:max_articles]:
+                upstream_source = item.get("source", "Unknown")
+                assets = item.get("assets", [])
+                assets_text = ", ".join(assets[:5]) if isinstance(assets, list) else ""
+                articles.append({
+                    "title": item.get("title", ""),
+                    "url": item.get("link", ""),
+                    "source": f"Blockchain API/{upstream_source}",
+                    "time": item.get("date", "")[:16],
+                    "summary": assets_text,
+                    "votes_positive": 0,
+                    "votes_negative": 0,
+                })
+            return articles
+        except Exception as e:
+            print(f"[News] Blockchain.com news error: {e}")
+            return []
+
     # ── Unified Fetch ─────────────────────────────────────────────────────────
 
     def get_news_for_symbol(self, symbol: str) -> dict:
@@ -187,6 +257,10 @@ class NewsFetcher:
         # CryptoPanic (most targeted)
         cp = self.fetch_cryptopanic(symbol, limit=30)
         all_articles.extend(cp)
+
+        # Blockchain.com direct API (asset-targeted)
+        blockchain = self.fetch_blockchain_explorer_news(symbol, max_articles=35)
+        all_articles.extend(blockchain)
 
         # RSS from crypto news sites
         rss = self.fetch_rss_all(symbol, max_articles=40)
@@ -238,6 +312,7 @@ class NewsFetcher:
                 "rss":         len(rss),
                 "reddit":      len(reddit),
                 "google":      len(google),
+                "blockchain":  len(blockchain),
             },
         }
         self._cache[symbol] = {"time": now, "data": result}

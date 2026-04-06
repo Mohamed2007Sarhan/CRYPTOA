@@ -353,8 +353,44 @@ Respond with STRICT JSON only (no text outside JSON):
         gecko   = self.full_data.get("coingecko", {})
         articles = news.get("articles", [])
 
+        # Build a balanced subset so one source does not dominate the prompt.
+        def source_family(src: str) -> str:
+            s = (src or "").lower()
+            if s.startswith("blockchain api/"):
+                return "blockchain"
+            if s.startswith("reddit"):
+                return "reddit"
+            if s.startswith("google news"):
+                return "google"
+            if s.startswith("cryptopanic"):
+                return "cryptopanic"
+            return "rss"
+
+        max_total = 30
+        max_per_family = 8
+        selected_articles = []
+        family_counts = {}
+        overflow = []
+
+        for a in articles:
+            src = a.get("source", "Unknown")
+            fam = source_family(src)
+            if family_counts.get(fam, 0) < max_per_family:
+                selected_articles.append(a)
+                family_counts[fam] = family_counts.get(fam, 0) + 1
+            else:
+                overflow.append(a)
+            if len(selected_articles) >= max_total:
+                break
+
+        if len(selected_articles) < max_total:
+            for a in overflow:
+                selected_articles.append(a)
+                if len(selected_articles) >= max_total:
+                    break
+
         news_text = ""
-        for i, a in enumerate(articles[:25], 1):
+        for i, a in enumerate(selected_articles, 1):
             title = a.get("title", "")
             src   = a.get("source", "")
             pv    = a.get("votes_positive", 0)
@@ -367,7 +403,7 @@ Respond with STRICT JSON only (no text outside JSON):
 
 Analyze the following data for {self.symbol} and evaluate market sentiment:
 
-═══ LATEST NEWS ({len(articles)} articles) ═══
+═══ LATEST NEWS (showing {len(selected_articles)} of {len(articles)} articles, source-balanced) ═══
 {news_text if news_text else 'No news available'}
 
 ═══ CURRENT SENTIMENT ═══
